@@ -39,13 +39,19 @@ class Request(collections.Mapping):
         else:
             netloc = self['SERVER_NAME']
             port = self['SERVER_PORT']
-            if (scheme == 'https' and port != '443') or (scheme == 'http' and port != '80'):
+            if ((scheme == 'https' and port != '443') or
+                (scheme == 'http' and port != '80')):
                 netloc += ':' + port
         return netloc
 
     @property
     def root(self):
-        parts = [self.scheme, self.netloc, urllib.parse.quote(self.script_name), None, None]
+        parts = [
+            self.scheme,
+            self.netloc,
+            urllib.parse.quote(self.script_name),
+            None, None
+        ]
         return urllib.parse.urlunsplit(parts)
 
     @property
@@ -54,7 +60,9 @@ class Request(collections.Mapping):
         path = urllib.parse.quote(self.script_name + self.path_info)
         parts.extend([self.netloc, path])
         if self.query:
-            parts.extend([urllib.parse.urlencode(self.query, doseq=True), None])
+            parts.extend(
+                [urllib.parse.urlencode(self.query, doseq=True), None]
+            )
         else:
             parts.extend([None, None])
         return urllib.parse.urlunsplit(parts)
