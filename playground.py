@@ -1,9 +1,57 @@
 import collections
 import functools
+import pathlib
 import re
 import sys
 import urllib.parse
 
+
+class Template:
+    TOK_RE = re.compile(r'({{.*?}}|{%.*?%})')
+    
+    def __init__(self, template_string):
+        self.template_string = template_string
+
+    @classmethod
+    def from_file(cls, path):
+        path = pathlib.Path(path)
+        return cls(path.read_text(encoding='utf-8'))
+
+    def split(self):
+        return self.TOK_RE.split(self.template_string)
+
+    def render(self, **context):
+        return ''.join(self._render(**context))
+
+    def _render(self, stream=None, **context):
+        nested = False if stream is None else True
+        stream = self.split() if stream is None else stream
+        in_block = False
+        for index, fragment in enumerate(stream):
+            if fragment[:2] not in {'{{', '{%'}:
+                if in_block:
+                    continue
+                yield fragment
+            elif fragment[:2] == '{{':
+                if in_block:
+                    continue
+                name = fragment[2:-2].strip()
+                yield str(eval(name, {'__builtins__': None}, context.copy()))
+            elif fragment[:2] == '{%':
+                contents = fragment[2:-2].strip()
+                match = re.match('for (.*?) in (.*)', contents)
+                if match:
+                    if in_block:
+                        continue
+                    in_block = True
+                    var, obj = match.groups()
+                    for it in eval(obj, {'__builtins__': None}, context.copy()):
+                        ctx = {var: it}
+                        yield from self._render(stream=stream[index + 1:], **ctx)
+                elif contents == 'endfor':
+                    if not in_block:
+                        break
+                    in_block = False
 
 class Request(collections.Mapping):
     KEYS = '''REQUEST_METHOD SCRIPT_NAME PATH_INFO
@@ -86,11 +134,12 @@ class Response:
         503: "503 Service Unavailable",
     }
 
-    def __init__(self, body, *, status=None, headers=None, encoding='utf-8'):
+    def __init__(self, body, *, status=None, headers=None, encoding='utf-8', content_type='text/html'):
         self._status = status
         self._headers = headers if headers is not None else {}
         self._body = body
         self.encoding = encoding
+        self.content_type = content_type
 
     @property
     def status(self):
@@ -104,7 +153,7 @@ class Response:
     def headers(self):
         if isinstance(self._headers, (dict, collections.Mapping)):
             if 'Content-Type' not in self._headers:
-                self._headers['Content-Type'] = 'text/plain; charset=utf-8'
+                self._headers['Content-Type'] = f'{self.content_type}; charset=utf-8'
             return list(self._headers.items())
         return self._headers
 
@@ -122,6 +171,7 @@ HTTP_404 = Response("Not Found", status=404)
 class Rule:
     def __init__(self, route, func, endpoint=None):
         self.route = route
+        self.count = None
         self.pattern = None
         self.types = None
         self.redirect_pattern = None
@@ -165,12 +215,14 @@ class Rule:
         pat = '^'
         replace = ''
         types = {}
+        count = 0
         for c in route:
             if not in_arg and c != '<':
                 pat += c
                 replace += c
                 continue
             if not in_arg and c == '<':
+                count += 1
                 in_arg = True
                 in_arg_name = True
                 pat += '(?P<'
@@ -211,24 +263,31 @@ class Rule:
         self.pattern = re.compile(pat)
         self.types = types
         self.replace = replace
+        self.count = count
 
 class Application:
     def __init__(self):
         self.routes = []
-        self.endpoints = {}
+        self.endpoints = collections.defaultdict(list)
         self._active_request = None
 
     def url_for(self, endpoint, **kwargs):
         root = self._active_request.root
-        path_info = self.endpoints[endpoint].replace.format(**kwargs)
-        return root + path_info
+        for endpoint in self.endpoints[endpoint]:
+            try:
+                if len(kwargs) != endpoint.count:
+                    continue
+                path_info = endpoint.replace.format(**kwargs)
+                return root + path_info
+            except KeyError:
+                pass
 
     def route(self, function_or_route, *, route=None, endpoint=None):
         if not callable(function_or_route):
             return functools.partial(self.route, route=function_or_route)
         rule = Rule(route, function_or_route, endpoint)
         self.routes.append(rule)
-        self.endpoints[rule.endpoint] = rule
+        self.endpoints[rule.endpoint].append(rule)
         return function_or_route
 
     def dispatch(self, request):
@@ -239,26 +298,22 @@ class Application:
             if main:
                 return route(request)
             kwargs = redirect.groupdict()
+            print(kwargs)
             url = self.url_for(route.endpoint, **kwargs)
             headers = {'Location': url}
-            status = 302
+            status = 301
             body = b''
             return Response(body, status=status, headers=headers)
         return HTTP_404
 
     def __call__(self, environ, start_response):
-        try:
-            self._active_request = request = Request(environ)
-            response = self.dispatch(request)
-            if isinstance(response, (str, bytes)):
-                response = Response(response)
-            start_response(response.status, response.headers)
-            self._active_request = None
-            return response.body
-        except:
-            response = Response('Internal Server Error', status=500)
-            start_response(response.status, response.headers, sys.exc_info())
-            return response.body
+        self._active_request = request = Request(environ)
+        response = self.dispatch(request)
+        if isinstance(response, (str, bytes)):
+            response = Response(response)
+        start_response(response.status, response.headers)
+        self._active_request = None
+        return response.body
 
 
 if __name__ == '__main__':
@@ -277,7 +332,7 @@ if __name__ == '__main__':
         method = request.method
         path_info = request.path_info
         url_for = application.url_for('root')
-        return f'''
+        body = f'''
 This: {request.this}
 
 url_for test: {url_for}
@@ -289,16 +344,19 @@ Query: {query}
 Method: {method}
 
 {env}'''
+        return Response(body, content_type='text/plain')
 
     @application.route('/hello/<bar>/')
     @application.route('/hello/')
     def hello(request, bar='World'):
-        1/0
-        return f'Hello, {bar}'
+        template = Template.from_file('template.html')
+        title = f'Hello, {bar}'
+        body = "I am the very model of a modern major general!"
+        return Response(template.render(title=title, body=body))
 
     @application.route('/foo/<count:int>')
     def foo(request, count):
-        return 'Foo!\n' * count
+        return Response('Foo!\n' * count, content_type='text/plain')
 
     with make_server(HOST, PORT, application) as httpd:
         httpd.serve_forever()
