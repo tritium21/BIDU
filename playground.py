@@ -320,8 +320,8 @@ if __name__ == '__main__':
     import pprint
     import os
     from wsgiref.simple_server import make_server
-    HOST  = os.environ.get('SERVER_HOST', '')
-    PORT  = int(os.environ.get('SERVER_PORT', 8000))
+    HOST = os.environ.get('SERVER_HOST', '')
+    PORT = int(os.environ.get('SERVER_PORT', 8000))
 
     application = Application()
     
