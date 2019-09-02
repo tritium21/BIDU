@@ -1,9 +1,9 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 15
-VisualStudioVersion = 15.0.26430.13
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.29215.179
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "Playground", "Playground.pyproj", "{B23F15DD-908F-4430-B3DC-C168474308DB}"
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "BIDU", "BIDU.pyproj", "{B23F15DD-908F-4430-B3DC-C168474308DB}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -18,5 +18,8 @@ Global
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {A7928D87-76C6-46B8-8561-86547AEDD10D}
 	EndGlobalSection
 EndGlobal

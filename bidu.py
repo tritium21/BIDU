@@ -1,5 +1,13 @@
+"""
+BIDU - the Bad Idea Don't Use web framework!
+
+No docs for you!
+"""
+
+## Bad Idea #1 - Use only the standard library
 import ast
 import collections
+import collections.abc
 import functools
 import pathlib
 import re
@@ -7,6 +15,7 @@ import sys
 import urllib.parse
 
 
+## Bad Idea #2 - a template engine that compiles templates into AST
 class Visit:
     def __init__(self, funcname):
         self.names = []
@@ -128,50 +137,6 @@ class ForNode(Node):
     def __repr__(self):
         return f"{self.__class__.__name__}({self.value!r}, name={self.name!r}, target={self.target!r})"
 
-def tokenize(instring):
-    toks = iter(re.split(r'(({{|{%)(.*?)(%}|}}))', instring))
-    while True:
-        try:
-            tok = next(toks)
-        except StopIteration:
-            break
-        if not tok.startswith('{{') and not tok.startswith('{%'):
-            yield ('text', tok)
-            continue
-        open_brace = next(toks)
-        exp = next(toks).strip()
-        next(toks)
-        if open_brace == '{{':
-            yield ('name', exp)
-            continue
-        yield ('statement', exp)
-
-def parse(stream):
-    def _parse(stream, end=None):
-        for token in stream:
-            if token[0] == 'statement' and token[1] == end:
-                break
-            if token[0] == 'text':
-                yield StringNode(token[1])
-                continue
-            if token[0] == 'name':
-                yield NameNode(token[1])
-                continue
-            kind = token[1].partition(' ')[0]
-            endkind = f'end{kind}'
-            if kind == 'for':
-                match = re.match(r"^for\s+(.*?)\s+in\s+(.*?)$", token[1])
-                if not match:
-                    raise ValueError(f"Parse Error: {token[1]!r}")
-                target, name = match.groups()
-                name = name
-                yield ForNode(
-                    list(_parse(stream, end=endkind)),
-                    name=name,
-                    target=target
-            )
-    return TemplateNode(list(_parse(stream)))
-
 
 class Template:
     def __init__(self, source, id=None):
@@ -183,11 +148,58 @@ class Template:
         path = pathlib.Path(path)
         return cls(path.read_text(encoding='utf-8'))
 
+    # Bad Idea #2.1 - static methods...
+    @staticmethod
+    def tokenize(instring):
+        toks = iter(re.split(r'(({{|{%)(.*?)(%}|}}))', instring))
+        while True:
+            try:
+                tok = next(toks)
+            except StopIteration:
+                break
+            if not tok.startswith('{{') and not tok.startswith('{%'):
+                yield ('text', tok)
+                continue
+            open_brace = next(toks)
+            exp = next(toks).strip()
+            next(toks)
+            if open_brace == '{{':
+                yield ('name', exp)
+                continue
+            yield ('statement', exp)
+
+    @staticmethod
+    def parse(stream):
+        def _parse(stream, end=None):
+            for token in stream:
+                if token[0] == 'statement' and token[1] == end:
+                    break
+                if token[0] == 'text':
+                    yield StringNode(token[1])
+                    continue
+                if token[0] == 'name':
+                    yield NameNode(token[1])
+                    continue
+                kind = token[1].partition(' ')[0]
+                endkind = f'end{kind}'
+                if kind == 'for':
+                    match = re.match(r"^for\s+(.*?)\s+in\s+(.*?)$", token[1])
+                    if not match:
+                        raise ValueError(f"Parse Error: {token[1]!r}")
+                    target, name = match.groups()
+                    name = name
+                    yield ForNode(
+                        list(_parse(stream, end=endkind)),
+                        name=name,
+                        target=target
+                )
+        return TemplateNode(list(_parse(stream)))
+
     def _build(self):
         namespace = {}
         visitor = Visit('template')
-        tokens = tokenize(self.source)
-        parse_tree = parse(tokens)
+        tokens = self.tokenize(self.source)
+        parse_tree = self.parse(tokens)
         ast_tree = visitor.visit(parse_tree)
         exec(compile(ast_tree, '<template>', 'single'), {}, namespace)
         return namespace.get('template')
@@ -198,7 +210,8 @@ class Template:
         return self._cache(*ctx, **kwctx)
 
 
-class Request(collections.Mapping):
+
+class Request(collections.abc.Mapping):
     KEYS = '''REQUEST_METHOD SCRIPT_NAME PATH_INFO
     QUERY_STRING CONTENT_TYPE CONTENT_LENGTH
     SERVER_NAME SERVER_PORT SERVER_PROTOCOL wsgi.version
@@ -296,7 +309,7 @@ class Response:
 
     @property
     def headers(self):
-        if isinstance(self._headers, (dict, collections.Mapping)):
+        if isinstance(self._headers, (dict, collections.abc.Mapping)):
             if 'Content-Type' not in self._headers:
                 self._headers['Content-Type'] = f'{self.content_type}; charset=utf-8'
             return list(self._headers.items())
