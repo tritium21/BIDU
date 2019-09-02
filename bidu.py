@@ -14,7 +14,7 @@ import re
 import sys
 import urllib.parse
 
-
+# Templates
 ## Bad Idea #2 - a template engine that compiles templates into AST
 class Visit:
     def __init__(self, funcname):
@@ -208,7 +208,7 @@ class Template:
         if self._cache is None:
             self._cache = self._build()
         return self._cache(*ctx, **kwctx)
-
+# /Templates
 
 
 class Request(collections.abc.Mapping):
@@ -475,8 +475,8 @@ class Application:
 
 
 if __name__ == '__main__':
-    import pprint
     import os
+    import getpass
     from wsgiref.simple_server import make_server
     HOST = os.environ.get('SERVER_HOST', '')
     PORT = int(os.environ.get('SERVER_PORT', 8000))
@@ -485,24 +485,7 @@ if __name__ == '__main__':
     
     @application.route('/')
     def root(request):
-        env = pprint.pformat(request.environ)
-        query = pprint.pformat(request.query)
-        method = request.method
-        path_info = request.path_info
-        url_for = application.url_for('root')
-        body = f'''
-This: {request.this}
-
-url_for test: {url_for}
-
-Path: {path_info}
-
-Query: {query}
-
-Method: {method}
-
-{env}'''
-        return Response(body, content_type='text/plain')
+        return Response('', status=302, headers={'location':f'/hello/{getpass.getuser()}/'})
 
     @application.route('/hello/<bar>/')
     @application.route('/hello/')
@@ -511,10 +494,6 @@ Method: {method}
         title = f'Hello, {bar}'
         body = "I am the very model of a modern major general!"
         return Response(template.render(title=title, body=body))
-
-    @application.route('/foo/<count:int>')
-    def foo(request, count):
-        return Response('Foo!\n' * count, content_type='text/plain')
 
     with make_server(HOST, PORT, application) as httpd:
         httpd.serve_forever()
