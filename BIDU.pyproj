@@ -34,6 +34,7 @@
     </Compile>
   </ItemGroup>
   <ItemGroup>
+    <Content Include="README.md" />
     <Content Include="template.html" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.Web.targets" />
