@@ -1,10 +1,3 @@
-"""
-BIDU - the Bad Idea Don't Use web framework!
-
-No docs for you!
-"""
-
-## Bad Idea #1 - Use only the standard library
 import ast
 import collections
 import collections.abc
@@ -14,8 +7,6 @@ import re
 import sys
 import urllib.parse
 
-# Templates
-## Bad Idea #2 - a template engine that compiles templates into AST
 class Visit:
     def __init__(self, funcname):
         self.names = []
@@ -208,7 +199,6 @@ class Template:
         if self._cache is None:
             self._cache = self._build()
         return self._cache(*ctx, **kwctx)
-# /Templates
 
 
 class Request(collections.abc.Mapping):
