@@ -4,7 +4,6 @@ import collections.abc
 import functools
 import pathlib
 import re
-import sys
 import urllib.parse
 
 class Visit:
