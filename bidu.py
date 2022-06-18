@@ -139,7 +139,6 @@ class Template:
         path = pathlib.Path(path)
         return cls(path.read_text(encoding='utf-8'))
 
-    # Bad Idea #2.1 - static methods...
     @staticmethod
     def tokenize(instring):
         toks = iter(re.split(r'(({{|{%)(.*?)(%}|}}))', instring))
