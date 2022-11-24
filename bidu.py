@@ -6,6 +6,7 @@ import pathlib
 import re
 import urllib.parse
 
+
 class Visit:
     def __init__(self, funcname):
         self.names = []
@@ -37,6 +38,7 @@ class Visit:
             ast.FunctionDef(
                 name='_inner',
                 args=ast.arguments(
+                    posonlyargs=[],
                     args=[],
                     vararg=None,
                     kwonlyargs=[],
@@ -70,6 +72,7 @@ class Visit:
             ast.FunctionDef(
                 name=self.funcname,
                 args=ast.arguments(
+                    posonlyargs=[],
                     args=[ast.arg(arg=n, annotation=None) for n in set(self.names)],
                     vararg=None,
                     kwonlyargs=[],
@@ -109,14 +112,18 @@ class Node:
     def __repr__(self):
         return f"{self.__class__.__name__}({repr(self.value)})"
 
+
 class TemplateNode(Node):
     pass
+
 
 class StringNode(Node):
     pass
 
+
 class NameNode(Node):
     pass
+
 
 class ForNode(Node):
     def __init__(self, value, *, name, target):
@@ -181,7 +188,7 @@ class Template:
                         list(_parse(stream, end=endkind)),
                         name=name,
                         target=target
-                )
+                    )
         return TemplateNode(list(_parse(stream)))
 
     def _build(self):
@@ -205,6 +212,7 @@ class Request(collections.abc.Mapping):
     SERVER_NAME SERVER_PORT SERVER_PROTOCOL wsgi.version
     wsgi.url_scheme wsgi.input wsgi.errors wsgi.multithread
     wsgi.multiprocess wsgi.run_once'''.strip().split()
+
     def __init__(self, environ):
         self.environ = {
             k: v for k, v in environ.items()
@@ -233,8 +241,10 @@ class Request(collections.abc.Mapping):
         else:
             netloc = self['SERVER_NAME']
             port = self['SERVER_PORT']
-            if ((scheme == 'https' and port != '443') or
-                (scheme == 'http' and port != '80')):
+            if (
+                (scheme == 'https' and port != '443') or
+                (scheme == 'http' and port != '80')
+            ):
                 netloc += ':' + port
         return netloc
 
@@ -260,6 +270,7 @@ class Request(collections.abc.Mapping):
         else:
             parts.extend([None, None])
         return urllib.parse.urlunsplit(parts)
+
 
 class Response:
     STATUS_MAP = {
@@ -314,6 +325,7 @@ class Response:
 
 HTTP_404 = Response("Not Found", status=404)
 
+
 class Rule:
     def __init__(self, route, func, endpoint=None):
         self.route = route
@@ -326,7 +338,7 @@ class Rule:
         self._parse_route()
 
     def __eq__(self, other):
-        if not isinstance(other, (str,Request,Rule)):
+        if not isinstance(other, (str, Request, Rule)):
             return False
         if isinstance(other, Rule):
             return (
@@ -411,6 +423,7 @@ class Rule:
         self.replace = replace
         self.count = count
 
+
 class Application:
     def __init__(self):
         self.routes = []
@@ -428,13 +441,13 @@ class Application:
             except KeyError:
                 pass
 
-    def route(self, function_or_route, *, route=None, endpoint=None):
-        if not callable(function_or_route):
-            return functools.partial(self.route, route=function_or_route)
-        rule = Rule(route, function_or_route, endpoint)
+    def router(self, func=None, /, *, route=None, endpoint=None):
+        if func is None:
+            return functools.partial(self.router, route=route, endpoint=endpoint)
+        rule = Rule(route, func, endpoint)
         self.routes.append(rule)
         self.endpoints[rule.endpoint].append(rule)
-        return function_or_route
+        return func
 
     def dispatch(self, request):
         for route in self.routes:
@@ -444,7 +457,6 @@ class Application:
             if main:
                 return route(request)
             kwargs = redirect.groupdict()
-            print(kwargs)
             url = self.url_for(route.endpoint, **kwargs)
             headers = {'Location': url}
             status = 301
@@ -470,13 +482,13 @@ if __name__ == '__main__':
     PORT = int(os.environ.get('SERVER_PORT', 8000))
 
     application = Application()
-    
-    @application.route('/')
-    def root(request):
-        return Response('', status=302, headers={'location':f'/hello/{getpass.getuser()}/'})
 
-    @application.route('/hello/<bar>/')
-    @application.route('/hello/')
+    @application.router(route='/')
+    def root(request):
+        return Response('', status=302, headers={'location': application.url_for('hello', bar=getpass.getuser())})
+
+    @application.router(route='/hello/<bar>/')
+    @application.router(route='/hello/')
     def hello(request, bar='World'):
         template = Template.from_file('template.html')
         title = f'Hello, {bar}'
