@@ -53,7 +53,7 @@ class Visit:
             ast.Return(
                 value=ast.Call(
                     func=ast.Attribute(
-                        value=ast.Str(s=''),
+                        value=ast.Constant(value=''),
                         attr='join',
                         ctx=ast.Load()
                     ),
@@ -88,7 +88,7 @@ class Visit:
         return ast.fix_missing_locations(tree)
 
     def visit_StringNode(self, node):
-        return self._yield(ast.Str(node.value))
+        return self._yield(ast.Constant(value=node.value))
 
     def visit_NameNode(self, node):
         self.names.append(node.value)
