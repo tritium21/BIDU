@@ -2,6 +2,7 @@ import ast
 import collections
 import collections.abc
 import functools
+import itertools
 import pathlib
 import re
 import urllib.parse
@@ -101,9 +102,16 @@ class Visit:
         body = list(self.visit(x) for x in node.value)
         if node.target in self.names:
             del self.names[self.names.index(node.target)]
-        orelse = []
-        return ast.For(target=target, iter=iter_, body=body, orelse=orelse)
+        orelse = list(self.visit(x) for x in node.orelse)
+        if not orelse:
+            return ast.For(target=target, iter=iter_, body=body, orelse=[])
+        return ast.If(
+            test=iter_,
+            body=[ast.For(target=target, iter=iter_, body=body, orelse=[])],
+            orelse=orelse
+        )
 
+ELSE = object()
 
 class Node:
     def __init__(self, value):
@@ -124,26 +132,33 @@ class StringNode(Node):
 class NameNode(Node):
     pass
 
-
 class ForNode(Node):
-    def __init__(self, value, *, name, target):
+    def __init__(self, value, *, name, target, orelse):
         self.value = value
         self.name = name
         self.target = target
+        self.orelse = orelse
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.value!r}, name={self.name!r}, target={self.target!r})"
 
 
 class Template:
+    CACHE = {}
+
     def __init__(self, source, id=None):
         self._cache = None
         self.source = source
 
     @classmethod
     def from_file(cls, path):
+        key = path
+        if key in cls.CACHE:
+            return cls.CACHE[key]
         path = pathlib.Path(path)
-        return cls(path.read_text(encoding='utf-8'))
+        c = cls(path.read_text(encoding='utf-8'))
+        cls.CACHE[key] = c
+        return c
 
     @staticmethod
     def tokenize(instring):
@@ -166,6 +181,12 @@ class Template:
 
     @staticmethod
     def parse(stream):
+        def _split_else(parse_stream):
+            _values = list(parse_stream)
+            values = list(itertools.takewhile(lambda x: x is not ELSE, _values))
+            orelse = list(itertools.dropwhile(lambda x: x is not ELSE, _values))[1:]
+            return values, orelse
+
         def _parse(stream, end=None):
             for token in stream:
                 if token[0] == 'statement' and token[1] == end:
@@ -178,16 +199,21 @@ class Template:
                     continue
                 kind = token[1].partition(' ')[0]
                 endkind = f'end{kind}'
+                if kind == 'else':
+                    yield ELSE
+                    continue
                 if kind == 'for':
                     match = re.match(r"^for\s+(.*?)\s+in\s+(.*?)$", token[1])
                     if not match:
                         raise ValueError(f"Parse Error: {token[1]!r}")
                     target, name = match.groups()
                     name = name
+                    values, orelse = _split_else(_parse(stream, end=endkind))
                     yield ForNode(
-                        list(_parse(stream, end=endkind)),
+                        value=values,
                         name=name,
-                        target=target
+                        target=target,
+                        orelse=orelse
                     )
         return TemplateNode(list(_parse(stream)))
 
@@ -197,6 +223,7 @@ class Template:
         tokens = self.tokenize(self.source)
         parse_tree = self.parse(tokens)
         ast_tree = visitor.visit(parse_tree)
+        print(ast.dump(ast_tree, indent=4))
         exec(compile(ast_tree, '<template>', 'single'), {}, namespace)
         return namespace.get('template')
 
@@ -493,7 +520,12 @@ if __name__ == '__main__':
         template = Template.from_file('template.html')
         title = f'Hello, {bar}'
         body = "I am the very model of a modern major general!"
-        return Response(template.render(title=title, body=body))
+        items1 = "This is a list of strings".split()
+        items2 = []
+        return Response(template.render(title=title, body=body, items1=items1, items2=items2))
 
     with make_server(HOST, PORT, application) as httpd:
-        httpd.serve_forever()
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass

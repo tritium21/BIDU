@@ -8,5 +8,19 @@
 <body>
     <h1>{{ title }}</h1>
     {{ body }}
+    <ul>
+    {% for item in items1 %}
+        <li>{{ item }}</li>
+    {% else %}
+        <li>Nothing to see for items1</li>
+    {% endfor %}
+    </ul>
+    <ol>
+    {% for item in items2 %}
+        <li>{{ item }}</li>
+    {% else %}
+        <li>Nothing to see for items2</li>
+    {% endfor %}
+    </ol>
 </body>
 </html>
