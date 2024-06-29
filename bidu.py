@@ -8,229 +8,213 @@ import re
 import urllib.parse
 
 
-class Visit:
-    def __init__(self, funcname):
-        self.names = []
-        self.funcname = funcname
+def tokenize(instring):
+    toks = iter(re.split(r'({{|{%|%}|}})', instring))
+    while True:
+        try:
+            tok = next(toks)
+        except StopIteration:
+            break
+        match tok:
+            case "{{":
+                yield ('expression', next(toks).strip())
+                next(toks)
+            case "{%":
+                block_head = next(toks).strip()
+                next(toks)
+                sp = re.split(r'[\s]+', block_head, maxsplit=1)
+                block_type, *rest = sp[0:]
+                rest = ' '.join(rest)
+                match block_type:
+                    case 'for':
+                        targets, _, expression = rest.partition(' in ')
+                        yield (
+                            'for',
+                            tuple(t for t in re.split(r'(?:,\s*?)+', targets)),
+                            expression.strip()
+                        )
+                    case 'else':
+                        yield ('else',)
+                    case 'endfor':
+                        yield ('for_end',)
+                    case 'set':
+                        targets, _, expression = rest.rpartition('=')
+                        targets = [
+                            tuple(t for t in re.split(r'(?:,\s*?)+', target.strip()))
+                            for target in targets.split('=')
+                        ]
+                        yield ('set', targets, expression.strip())
+                    case 'if':
+                        yield ('if', rest)
+                    case 'endif':
+                        yield ('if_end',)
+            case _:
+                yield ('text', tok)
 
-    def _yield(self, node):
-        return ast.Expr(ast.Yield(node))
 
-    def _string(self, node):
-        return ast.Call(
-            func=ast.Name('str', ctx=ast.Load()),
-            args=[node],
-            keywords=[],
+class NameVisitor(ast.NodeVisitor):
+    def __init__(self, *p, **kw):
+        super().__init__(*p, **kw)
+        self._NAMES = []
+
+    def visit_Name(self, node):
+        name = node.id
+        if name not in self._NAMES:
+            self._NAMES.append(name)
+
+    @classmethod
+    def get_names(cls, tree, exclude=()):
+        inst = cls()
+        inst.visit(tree)
+        return [n for n in inst._NAMES if n not in exclude]
+
+def parse(stream):
+    ELSE = object()
+    EXCLUDE = dir(__builtins__)
+
+    def _expression(expression):
+        body = ast.parse(expression).body
+        return [
+            ast.Expr(ast.Yield(value=ast.Call(
+                func=ast.Name('str', ctx=ast.Load()),
+                args=[x.value],
+                keywords=[],
+            )))
+            for x in body
+        ]
+    
+    def _target(target):
+        if len(target) == 1:
+            EXCLUDE.append(target[0])
+            return ast.Name(id=target[0], ctx=ast.Store())
+        EXCLUDE.extend(target)
+        return ast.Tuple(
+            elts=[ast.Name(id=t, ctx=ast.Store()) for t in target],
+            ctx=ast.Store()
         )
 
-    def visit(self, node):
-        if not isinstance(node, Node):
-            raise TypeError()
-        node_name = node.__class__.__name__
-        method = getattr(self, f'visit_{node_name}', self.visit_generic)
-        return method(node)
+    def _split_else(parse_stream):
+        _values = list(parse_stream)
+        values = list(itertools.takewhile(lambda x: x is not ELSE, _values))
+        orelse = list(itertools.dropwhile(lambda x: x is not ELSE, _values))[1:]
+        return values, orelse
 
-    def visit_generic(self, node):
-        raise ValueError(f"Unknown node type {node.__class__.__name__!r}")
+    def _parse(stream, end=None):
+        stream = iter(stream)
+        while True:
+            try:
+                token = next(stream)
+            except StopIteration:
+                break
+            if token[0] == end:
+                return
+            match token:
+                case ('text', text):
+                    yield ast.Expr(ast.Yield(ast.Constant(text)))
+                case ('expression', expression):
+                    yield from _expression(expression)
+                case ('else',):
+                    yield ELSE
+                case ('for', targets, expression):
+                    iter_ = [n.value for n in ast.parse(expression).body][0]
+                    target = _target(targets)
+                    body, orelse = _split_else(_parse(stream, 'for_end'))
+                    yield ast.If(
+                        test=iter_,
+                        body=[ast.For(target=target, iter=iter_, body=body, orelse=[])],
+                        orelse=orelse
+                    )
+                case ('set', targets, expression):
+                    targets = [_target(t) for t in targets]
+                    value = [n.value for n in ast.parse(expression).body][0]
+                    yield ast.Assign(targets=targets, value=value)
+                case ('if', expression):
+                    test = [n.value for n in ast.parse(expression).body][0]
+                    body, orelse = _split_else(_parse(stream, 'if_end'))
+                    yield ast.If(
+                        test=test,
+                        body=body,
+                        orelse=orelse
+                    )
 
-    def visit_TemplateNode(self, node):
-        _inner_body = [self.visit(x) for x in node.value]
-        body = [
+
+    inner_func = ast.FunctionDef(
+        name="_inner",
+        args=ast.arguments(
+            posonlyargs=[],
+            args=[],
+            vararg=None,
+            kwonlyargs=[],
+            kw_defaults=[],
+            kwarg=None,
+            defaults=[],
+        ),
+        body=list(_parse(stream)),
+        decorator_list=[],
+        returns=None,
+    )
+    names = NameVisitor.get_names(inner_func, EXCLUDE)
+
+    return ast.fix_missing_locations(ast.Module(
+        body=[
             ast.FunctionDef(
-                name='_inner',
+                name="render",
                 args=ast.arguments(
                     posonlyargs=[],
                     args=[],
                     vararg=None,
-                    kwonlyargs=[],
-                    kw_defaults=[],
+                    kwonlyargs=[
+                        ast.arg(arg=x) for x in names
+                    ],
+                    kw_defaults=[None for x in names],
                     kwarg=None,
-                    defaults=[]
+                    defaults=[],
                 ),
-                body=_inner_body,
-                decorator_list=[],
-                returns=None
-            ),
-            ast.Return(
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Constant(value=''),
-                        attr='join',
-                        ctx=ast.Load()
-                    ),
-                    args=[
-                        ast.Call(
-                            func=ast.Name(id='_inner', ctx=ast.Load()),
-                            args=[],
+                body=[
+                    inner_func,
+                    ast.Return(
+                        value=ast.Call(
+                            func=ast.Attribute(
+                                value=ast.Constant(value=''),
+                                attr='join',
+                                ctx=ast.Load()
+                            ),
+                            args=[
+                                ast.Call(
+                                    func=ast.Name(id="_inner", ctx=ast.Load()),
+                                    args=[],
+                                    keywords=[],
+                                )
+                            ],
                             keywords=[]
                         )
-                    ],
-                    keywords=[]
-                )
-            )
-        ]
-        tree = ast.Interactive(body=[
-            ast.FunctionDef(
-                name=self.funcname,
-                args=ast.arguments(
-                    posonlyargs=[],
-                    args=[ast.arg(arg=n, annotation=None) for n in set(self.names)],
-                    vararg=None,
-                    kwonlyargs=[],
-                    kw_defaults=[],
-                    kwarg=None,
-                    defaults=[]
-                ),
-                body=body,
-                decorator_list=[],
-                returns=None
-            )]
-        )
-        return ast.fix_missing_locations(tree)
-
-    def visit_StringNode(self, node):
-        return self._yield(ast.Constant(value=node.value))
-
-    def visit_NameNode(self, node):
-        self.names.append(node.value)
-        return self._yield(self._string(ast.Name(id=node.value, ctx=ast.Load())))
-
-    def visit_ForNode(self, node):
-        self.names.append(node.name)
-        iter_ = ast.Name(id=node.name, ctx=ast.Load())
-        target = ast.Name(id=node.target, ctx=ast.Store())
-        body = list(self.visit(x) for x in node.value)
-        if node.target in self.names:
-            del self.names[self.names.index(node.target)]
-        orelse = list(self.visit(x) for x in node.orelse)
-        if not orelse:
-            return ast.For(target=target, iter=iter_, body=body, orelse=[])
-        return ast.If(
-            test=iter_,
-            body=[ast.For(target=target, iter=iter_, body=body, orelse=[])],
-            orelse=orelse
-        )
-
-ELSE = object()
-
-class Node:
-    def __init__(self, value):
-        self.value = value
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({repr(self.value)})"
-
-
-class TemplateNode(Node):
-    pass
-
-
-class StringNode(Node):
-    pass
-
-
-class NameNode(Node):
-    pass
-
-class ForNode(Node):
-    def __init__(self, value, *, name, target, orelse):
-        self.value = value
-        self.name = name
-        self.target = target
-        self.orelse = orelse
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.value!r}, name={self.name!r}, target={self.target!r})"
-
-
-class Template:
-    CACHE = {}
-
-    def __init__(self, source, id=None):
-        self._cache = None
-        self.source = source
-
-    @classmethod
-    def from_file(cls, path):
-        key = path
-        if key in cls.CACHE:
-            return cls.CACHE[key]
-        path = pathlib.Path(path)
-        c = cls(path.read_text(encoding='utf-8'))
-        cls.CACHE[key] = c
-        return c
-
-    @staticmethod
-    def tokenize(instring):
-        toks = iter(re.split(r'(({{|{%)(.*?)(%}|}}))', instring))
-        while True:
-            try:
-                tok = next(toks)
-            except StopIteration:
-                break
-            if not tok.startswith('{{') and not tok.startswith('{%'):
-                yield ('text', tok)
-                continue
-            open_brace = next(toks)
-            exp = next(toks).strip()
-            next(toks)
-            if open_brace == '{{':
-                yield ('name', exp)
-                continue
-            yield ('statement', exp)
-
-    @staticmethod
-    def parse(stream):
-        def _split_else(parse_stream):
-            _values = list(parse_stream)
-            values = list(itertools.takewhile(lambda x: x is not ELSE, _values))
-            orelse = list(itertools.dropwhile(lambda x: x is not ELSE, _values))[1:]
-            return values, orelse
-
-        def _parse(stream, end=None):
-            for token in stream:
-                if token[0] == 'statement' and token[1] == end:
-                    break
-                if token[0] == 'text':
-                    yield StringNode(token[1])
-                    continue
-                if token[0] == 'name':
-                    yield NameNode(token[1])
-                    continue
-                kind = token[1].partition(' ')[0]
-                endkind = f'end{kind}'
-                if kind == 'else':
-                    yield ELSE
-                    continue
-                if kind == 'for':
-                    match = re.match(r"^for\s+(.*?)\s+in\s+(.*?)$", token[1])
-                    if not match:
-                        raise ValueError(f"Parse Error: {token[1]!r}")
-                    target, name = match.groups()
-                    name = name
-                    values, orelse = _split_else(_parse(stream, end=endkind))
-                    yield ForNode(
-                        value=values,
-                        name=name,
-                        target=target,
-                        orelse=orelse
                     )
-        return TemplateNode(list(_parse(stream)))
+                ],
+                decorator_list=[],
+                returns=None,
+            )
 
-    def _build(self):
-        namespace = {}
-        visitor = Visit('template')
-        tokens = self.tokenize(self.source)
-        parse_tree = self.parse(tokens)
-        ast_tree = visitor.visit(parse_tree)
-        print(ast.dump(ast_tree, indent=4))
-        exec(compile(ast_tree, '<template>', 'single'), {}, namespace)
-        return namespace.get('template')
+        ],
+        type_ignores=[]
+    ))
 
-    def render(self, *ctx, **kwctx):
-        if self._cache is None:
-            self._cache = self._build()
-        return self._cache(*ctx, **kwctx)
+class TemplateLoader:
+    def __init__(self):
+        self.cache = {}
+
+    def load(self, path):
+        path = pathlib.Path(path)
+        if path.name not in self.cache:
+            text = path.read_text(encoding='UTF-8')
+            tree = parse(tokenize(text))
+            namespace = {}
+            exec(compile(tree, path.name, 'exec'), {}, namespace)
+            self.cache[path.name] = namespace['render']
+        return self.cache[path.name]
+
+    def render(self, path, **kwargs):
+        tmpl = self.load(path)
+        return tmpl(**kwargs)
 
 
 class Request(collections.abc.Mapping):
@@ -455,6 +439,7 @@ class Application:
     def __init__(self):
         self.routes = []
         self.endpoints = collections.defaultdict(list)
+        self.templates = TemplateLoader()
         self._active_request = None
 
     def url_for(self, endpoint, **kwargs):
@@ -517,12 +502,10 @@ if __name__ == '__main__':
     @application.router(route='/hello/<bar>/')
     @application.router(route='/hello/')
     def hello(request, bar='World'):
-        template = Template.from_file('template.html')
         title = f'Hello, {bar}'
         body = "I am the very model of a modern major general!"
-        items1 = "This is a list of strings".split()
-        items2 = []
-        return Response(template.render(title=title, body=body, items1=items1, items2=items2))
+        items = "This is a list of strings".split()
+        return Response(application.templates.render("template.html.tmpl", title=title, body=body, items=items))
 
     with make_server(HOST, PORT, application) as httpd:
         try:
