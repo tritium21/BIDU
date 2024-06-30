@@ -2,6 +2,7 @@ import ast
 import collections
 import collections.abc
 import functools
+import inspect
 import itertools
 import pathlib
 import re
@@ -161,14 +162,14 @@ def parse(stream):
                 name="render",
                 args=ast.arguments(
                     posonlyargs=[],
-                    args=[],
+                    args=[ast.arg(arg="ctx")],
                     vararg=None,
                     kwonlyargs=[
                         ast.arg(arg=x) for x in names
                     ],
-                    kw_defaults=[None for x in names],
+                    kw_defaults=[ast.Constant(value=None) for x in names],
                     kwarg=None,
-                    defaults=[],
+                    defaults=[ast.Constant(value=None)],
                 ),
                 body=[
                     inner_func,
@@ -218,22 +219,26 @@ class TemplateLoader:
 
 
 class Request(collections.abc.Mapping):
-    KEYS = '''REQUEST_METHOD SCRIPT_NAME PATH_INFO
-    QUERY_STRING CONTENT_TYPE CONTENT_LENGTH
-    SERVER_NAME SERVER_PORT SERVER_PROTOCOL wsgi.version
-    wsgi.url_scheme wsgi.input wsgi.errors wsgi.multithread
-    wsgi.multiprocess wsgi.run_once'''.strip().split()
-
-    def __init__(self, environ):
+    def __init__(self, environ, *posargs, **kwargs):
+        super().__init__(*posargs, **kwargs)
         self.environ = {
-            k: v for k, v in environ.items()
-            if k.startswith('HTTP_') or k in self.KEYS
+            k: v 
+            for k, v in environ.items()
+            if k.startswith('HTTP_') or k.startswith('wsgi.') or k in (
+                "REQUEST_METHOD",
+                "SCRIPT_NAME",
+                "PATH_INFO",
+                "QUERY_STRING",
+                "CONTENT_TYPE",
+                "CONTENT_LENGTH",
+                "SERVER_NAME",
+                "SERVER_PORT",
+                "SERVER_PROTOCOL",
+            )
         }
+        self.request_method = self.environ['REQUEST_METHOD']
         self.path_info = self.environ['PATH_INFO']
-        self.script_name = self.environ['SCRIPT_NAME']
-        self.method = self.environ['REQUEST_METHOD']
-        self.scheme = self.environ['wsgi.url_scheme']
-        self.query = urllib.parse.parse_qs(self.environ['QUERY_STRING'])
+        self.query = urllib.parse.parse_qs(self.environ.get('QUERY_STRING', ''))
 
     def __getitem__(self, key):
         return self.environ[key]
@@ -244,44 +249,96 @@ class Request(collections.abc.Mapping):
     def __len__(self):
         return len(self.environ)
 
-    @property
-    def netloc(self):
-        scheme = self['wsgi.url_scheme']
-        if self.get('HTTP_HOST'):
-            netloc = self['HTTP_HOST']
-        else:
-            netloc = self['SERVER_NAME']
-            port = self['SERVER_PORT']
-            if (
-                (scheme == 'https' and port != '443') or
-                (scheme == 'http' and port != '80')
-            ):
-                netloc += ':' + port
-        return netloc
 
-    @property
-    def root(self):
-        parts = [
-            self.scheme,
-            self.netloc,
-            urllib.parse.quote(self.script_name),
-            None, None
-        ]
-        return urllib.parse.urlunsplit(parts)
+class RuleSegment:
+    def __init__(self, name, pattern, type, type_name):
+        self.name = name
+        self.pattern = pattern
+        self.type = type
+        self.type_name = type_name
 
-    @property
-    def this(self):
-        parts = [self.scheme]
-        path = urllib.parse.quote(self.script_name + self.path_info)
-        parts.extend([self.netloc, path])
-        if self.query:
-            parts.extend(
-                [urllib.parse.urlencode(self.query, doseq=True), None]
+    def match(self, segment):
+        if (m := self.pattern.fullmatch(segment)):
+            return {k: self.type(v) for k, v in m.groupdict().items()}
+
+class Rule:
+    def __init__(self, method, route, handler, endpoint_name=None):
+        self.method = method
+        self.route = route
+        self.handler = handler
+        self.endpoint_name = endpoint_name if endpoint_name is not None else handler.__name__
+        self._handler_parameters = inspect.signature(self.handler).parameters
+        self._segments = self._parse_route()
+        self.count = len([s for s in self._segments if isinstance(s, RuleSegment)])
+
+    def __call__(self, request):
+        func = self.match_path(request.path_info)
+        return func(request)
+
+    def __eq__(self, other):
+        if isinstance(other, Rule):
+            return (
+                (self.method, self.route, self.handler, self.endpoint_name) == 
+                (other.method, other.route, other.handler, other.endpoint_name)
             )
-        else:
-            parts.extend([None, None])
-        return urllib.parse.urlunsplit(parts)
+        if isinstance(other, Request):
+            return (self.method == other.request_method) and bool(self.match_path(other.path_info))
+        if isinstance(other, str):
+            return bool(self.match_path(other))
+        return NotImplemented
+    
+    def redirect(self, **kwargs):
+        new_path = []
+        for segment in self._segments:
+            if isinstance(segment, str):
+                new_path.append(segment)
+                continue
+            new_path.append(kwargs.pop(segment.name))
+        return str(pathlib.PurePosixPath(*new_path))
 
+    def match_path(self, other):
+        parts = pathlib.PurePosixPath(other).parts
+        kwargs = {}
+        if len(parts) != len(self._segments):
+            return
+        for part, segment in zip(parts, self._segments):
+            if isinstance(segment, str):
+                if part != segment:
+                    return
+                continue
+            if isinstance(segment, RuleSegment):
+                if (m := segment.match(part)):
+                    kwargs.update(m)
+                else:
+                    return
+        return functools.partial(self.handler, **kwargs)
+
+
+    def _parse_route(self):
+        type_patterns = {
+            'str': '[^/]+',
+            'int': r'\d+',
+        }
+        types = {
+            'str': str,
+            'int': int,
+        }
+        parts = pathlib.PurePosixPath(self.route).parts[1:]
+        segments = ['/']
+        for part in parts:
+            if not part.startswith('<') and not part.endswith('>'):
+                segments.append(part)
+                continue
+            part = part.removeprefix('<').removesuffix('>')
+            type, _, name = part.partition(':')
+            if not name:
+                name = type
+                type = 'str'
+            if name not in self._handler_parameters:
+                raise ValueError(f"Name {name!r} not defined on {self.handler!r}")
+            pattern = re.compile(f"^(?P<{name}>{type_patterns.get(type)})$")
+            segments.append(RuleSegment(name, pattern, types[type], type))
+        return segments
 
 class Response:
     STATUS_MAP = {
@@ -336,148 +393,44 @@ class Response:
 
 HTTP_404 = Response("Not Found", status=404)
 
-
-class Rule:
-    def __init__(self, route, func, endpoint=None):
-        self.route = route
-        self.count = None
-        self.pattern = None
-        self.types = None
-        self.redirect_pattern = None
-        self.endpoint = endpoint if endpoint is not None else func.__name__
-        self.function = func
-        self._parse_route()
-
-    def __eq__(self, other):
-        if not isinstance(other, (str, Request, Rule)):
-            return False
-        if isinstance(other, Rule):
-            return (
-                (self.route, self.types, self.endpoint, self.function) ==
-                (other.route, other.types, other.endpoint, other.function)
-            )
-        elif isinstance(other, str):
-            match, redirect = self.match(other)
-        else:
-            match, redirect = self.match(other.path_info)
-        if match or redirect:
-            return True
-        return False
-
-    def match(self, other):
-        return self.pattern.match(other), self.redirect_pattern.match(other)
-
-    def __call__(self, request):
-        match, redirect = self.match(request.path_info)
-        matches = match.groupdict()
-        kwargs = {k: self.types[k](v) for k, v in matches.items()}
-        return self.function(request, **kwargs)
-
-    def _parse_route(self):
-        route = self.route
-        type_map_re = {'int': r'\d+', 'str': '[^/]+'}
-        type_map = {'int': int, 'str': str}
-        in_arg = False
-        in_arg_name = False
-        arg_name = ''
-        type_name = ''
-        pat = '^'
-        replace = ''
-        types = {}
-        count = 0
-        for c in route:
-            if not in_arg and c != '<':
-                pat += c
-                replace += c
-                continue
-            if not in_arg and c == '<':
-                count += 1
-                in_arg = True
-                in_arg_name = True
-                pat += '(?P<'
-                replace += '{'
-                continue
-            if in_arg and in_arg_name and c not in ':>':
-                arg_name += c
-                continue
-            if in_arg and in_arg_name and c == ':':
-                pat += arg_name + '>'
-                replace += arg_name + '}'
-                in_arg_name = False
-                continue
-            if in_arg and in_arg_name and c == '>':
-                in_arg = False
-                in_arg_name = False
-                pat += arg_name + '>' + type_map_re['str'] + ')'
-                types[arg_name] = type_map['str']
-                replace += arg_name + '}'
-                arg_name = ''
-                continue
-            if in_arg and not in_arg_name and c != '>':
-                type_name += c
-                continue
-            if in_arg and not in_arg_name and c == '>':
-                in_arg = False
-                pat += type_map_re[type_name] + ')'
-                types[arg_name] = type_map[type_name]
-                type_name = ''
-                arg_name = ''
-                continue
-        pat += '$'
-        if pat[-2:] == '/$':
-            redir = pat[:-2] + '$'
-        else:
-            redir = pat[:-1] + '/$'
-        self.redirect_pattern = re.compile(redir)
-        self.pattern = re.compile(pat)
-        self.types = types
-        self.replace = replace
-        self.count = count
-
-
 class Application:
     def __init__(self):
         self.routes = []
         self.endpoints = collections.defaultdict(list)
         self.templates = TemplateLoader()
-        self._active_request = None
 
-    def url_for(self, endpoint, **kwargs):
-        root = self._active_request.root
-        for endpoint in self.endpoints[endpoint]:
+    def url_for(self, endpoint_name, **kwargs):
+        for rule in self.endpoints[endpoint_name]:
             try:
-                if len(kwargs) != endpoint.count:
+                if len(kwargs) != rule.count:
                     continue
-                path_info = endpoint.replace.format(**kwargs)
-                return root + path_info
+                return rule.redirect(**kwargs)
             except KeyError:
                 pass
 
-    def router(self, func=None, /, *, route=None, endpoint=None):
+    def router(self, func=None, /, *, method=None, route=None, endpoint_name=None):
         if func is None:
-            return functools.partial(self.router, route=route, endpoint=endpoint)
-        rule = Rule(route, func, endpoint)
+            return functools.partial(self.router, method=method, route=route, endpoint_name=endpoint_name)
+        rule = Rule(method, route, func, endpoint_name)
         self.routes.append(rule)
-        self.endpoints[rule.endpoint].append(rule)
+        self.endpoints[rule.endpoint_name].append(rule)
         return func
+
+    get = functools.partialmethod(router, method='GET')
+    post = functools.partialmethod(router, method='POST')
+    put = functools.partialmethod(router, method='PUT')
+    patch = functools.partialmethod(router, method='PATCH')
+    delete = functools.partialmethod(router, method='DELETE')
 
     def dispatch(self, request):
         for route in self.routes:
             if request != route:
                 continue
-            main, redirect = route.match(request.path_info)
-            if main:
-                return route(request)
-            kwargs = redirect.groupdict()
-            url = self.url_for(route.endpoint, **kwargs)
-            headers = {'Location': url}
-            status = 301
-            body = b''
-            return Response(body, status=status, headers=headers)
+            return route(request)
         return HTTP_404
 
     def __call__(self, environ, start_response):
-        self._active_request = request = Request(environ)
+        request = Request(environ)
         response = self.dispatch(request)
         if isinstance(response, (str, bytes)):
             response = Response(response)
@@ -495,16 +448,16 @@ if __name__ == '__main__':
 
     application = Application()
 
-    @application.router(route='/')
+    @application.router(method='GET', route='/')
     def root(request):
         return Response('', status=302, headers={'location': application.url_for('hello', bar=getpass.getuser())})
 
-    @application.router(route='/hello/<bar>/')
-    @application.router(route='/hello/')
+    @application.get(route='/hello/<bar>/')
+    @application.get(route='/hello/')
     def hello(request, bar='World'):
         title = f'Hello, {bar}'
         body = "I am the very model of a modern major general!"
-        items = "This is a list of strings".split()
+        items = request.query.get("items", "This is a list of strings".split())
         return Response(application.templates.render("template.html.tmpl", title=title, body=body, items=items))
 
     with make_server(HOST, PORT, application) as httpd:
