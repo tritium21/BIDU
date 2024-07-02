@@ -1,7 +1,9 @@
 import ast
+import builtins
 import collections
 import collections.abc
 import functools
+import http.cookies
 import inspect
 import itertools
 import pathlib
@@ -71,7 +73,7 @@ class NameVisitor(ast.NodeVisitor):
 
 def parse(stream):
     ELSE = object()
-    EXCLUDE = dir(__builtins__)
+    EXCLUDE = dir(builtins)
 
     def _expression(expression):
         body = ast.parse(expression).body
@@ -248,6 +250,12 @@ class Request(collections.abc.Mapping):
 
     def __len__(self):
         return len(self.environ)
+    
+    @property
+    def cookies(self):
+        if not "HTTP_COOKIE" in self.environ:
+            return {}
+        return http.cookies.SimpleCookie(self.environ["HTTP_COOKIE"])
 
 
 class RuleSegment:
@@ -365,6 +373,7 @@ class Response:
         self._body = body
         self.encoding = encoding
         self.content_type = content_type
+        self.cookies = http.cookies.SimpleCookie()
 
     @property
     def status(self):
@@ -376,11 +385,13 @@ class Response:
 
     @property
     def headers(self):
+        cookies = [("Set-Cookie", morsel.OutputString()) for morsel in self.cookies.values()]
         if isinstance(self._headers, (dict, collections.abc.Mapping)):
             if 'Content-Type' not in self._headers:
                 self._headers['Content-Type'] = f'{self.content_type}; charset=utf-8'
-            return list(self._headers.items())
-        return self._headers
+            headers = [*self._headers.items(), *cookies]
+            return headers
+        return [*self._headers, *cookies]
 
     @property
     def body(self):
@@ -437,31 +448,3 @@ class Application:
         start_response(response.status, response.headers)
         self._active_request = None
         return response.body
-
-
-if __name__ == '__main__':
-    import os
-    import getpass
-    from wsgiref.simple_server import make_server
-    HOST = os.environ.get('SERVER_HOST', '')
-    PORT = int(os.environ.get('SERVER_PORT', 8000))
-
-    application = Application()
-
-    @application.router(method='GET', route='/')
-    def root(request):
-        return Response('', status=302, headers={'location': application.url_for('hello', bar=getpass.getuser())})
-
-    @application.get(route='/hello/<bar>/')
-    @application.get(route='/hello/')
-    def hello(request, bar='World'):
-        title = f'Hello, {bar}'
-        body = "I am the very model of a modern major general!"
-        items = request.query.get("items", "This is a list of strings".split())
-        return Response(application.templates.render("template.html.tmpl", title=title, body=body, items=items))
-
-    with make_server(HOST, PORT, application) as httpd:
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            pass

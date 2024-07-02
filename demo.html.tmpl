@@ -8,7 +8,7 @@
 <body>
     <h1>{{ title }}</h1>
     {{ body }}
-    {% set foo = 1 %}{% if foo %}<p>Hello, Foo!</p>{% endif %}
+    <p>You were last here {{ then }}</p>
     <ul>{% for item in items %}
         <li>{{ item }}</li>{% else %}<li>No Items</li>
     {% endfor %}
