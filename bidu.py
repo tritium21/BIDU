@@ -4,10 +4,13 @@ import collections
 import collections.abc
 import functools
 import http.cookies
+import importlib.machinery
 import inspect
 import itertools
 import pathlib
 import re
+import sys
+import types
 import urllib.parse
 
 
@@ -205,19 +208,69 @@ class TemplateLoader:
     def __init__(self):
         self.cache = {}
 
-    def load(self, path):
+    def _exec(self, path, namespace):
+        path = pathlib.Path(path)
+        text = path.read_text(encoding='UTF-8')
+        tree = parse(tokenize(text))
+        exec(compile(tree, path.name, 'exec'), {}, namespace)
+
+    def load_mod(self, path):
         path = pathlib.Path(path)
         if path.name not in self.cache:
-            text = path.read_text(encoding='UTF-8')
-            tree = parse(tokenize(text))
-            namespace = {}
-            exec(compile(tree, path.name, 'exec'), {}, namespace)
-            self.cache[path.name] = namespace['render']
+            mod = types.ModuleType(path.stem)
+            self._exec(path, mod.__dict__)
+            self.cache[path.name] = mod
         return self.cache[path.name]
+    
+    def load(self, path):
+        return self.load_mod(path).render
 
     def render(self, path, **kwargs):
         tmpl = self.load(path)
         return tmpl(**kwargs)
+
+import importlib
+import importlib.abc
+import importlib.util
+import sys
+
+class HTMLFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if path is None or path == "":
+            path = [pathlib.Path.cwd()]
+        if "." in fullname:
+            *parents, name = fullname.split(".")
+        else:
+            name = fullname
+        for entry in path:
+            p = pathlib.Path(entry, name)
+            
+            if p.is_dir():
+                filename = p / "__init__.tmpl"
+                submodule_locations = [p]
+            else:
+                filename = p.with_suffix(".tmpl")
+                submodule_locations = None
+            if not filename.exists():
+                continue
+
+            return importlib.util.spec_from_file_location(
+                fullname, filename, loader=HTMLLoader(filename),
+                submodule_search_locations=submodule_locations,
+            )
+
+class HTMLLoader(importlib.abc.Loader):
+    def __init__(self, filename):
+        self.filename = filename
+        self._templates = TemplateLoader()
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        self._templates._exec(self.filename, module.__dict__)
+
+sys.meta_path.append(HTMLFinder())
 
 
 class Request(collections.abc.Mapping):
@@ -268,6 +321,7 @@ class RuleSegment:
     def match(self, segment):
         if (m := self.pattern.fullmatch(segment)):
             return {k: self.type(v) for k, v in m.groupdict().items()}
+
 
 class Rule:
     def __init__(self, method, route, handler, endpoint_name=None):
@@ -348,7 +402,7 @@ class Rule:
             segments.append(RuleSegment(name, pattern, types[type], type))
         return segments
 
-class Response:
+class Response(collections.abc.MutableMapping):
     STATUS_MAP = {
         200: "200 OK",
         201: "201 Created",
@@ -369,11 +423,26 @@ class Response:
 
     def __init__(self, body, *, status=None, headers=None, encoding='utf-8', content_type='text/html'):
         self._status = status
-        self._headers = headers if headers is not None else {}
+        self._headers = dict(headers) if headers is not None else {}
         self._body = body
         self.encoding = encoding
         self.content_type = content_type
         self.cookies = http.cookies.SimpleCookie()
+
+    def __getitem__(self, name):
+        return self._headers[name]
+
+    def __setitem__(self, name, value):
+        self._headers[name] = value
+
+    def __delitem__(self, name):
+        del self._headers[name]
+
+    def __iter__(self):
+        return iter(self._headers)
+    
+    def __len__(self):
+        return len(self._headers)
 
     @property
     def status(self):
@@ -386,12 +455,10 @@ class Response:
     @property
     def headers(self):
         cookies = [("Set-Cookie", morsel.OutputString()) for morsel in self.cookies.values()]
-        if isinstance(self._headers, (dict, collections.abc.Mapping)):
-            if 'Content-Type' not in self._headers:
-                self._headers['Content-Type'] = f'{self.content_type}; charset=utf-8'
-            headers = [*self._headers.items(), *cookies]
-            return headers
-        return [*self._headers, *cookies]
+        if 'Content-Type' not in self._headers:
+            self._headers['Content-Type'] = f'{self.content_type}; charset=utf-8'
+        headers = [*self._headers.items(), *cookies]
+        return headers
 
     @property
     def body(self):

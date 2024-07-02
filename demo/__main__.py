@@ -6,6 +6,8 @@ from wsgiref.simple_server import make_server
 
 from bidu import Application, Response
 
+from . import template
+
 HOST = os.environ.get('SERVER_HOST', '')
 PORT = int(os.environ.get('SERVER_PORT', 8000))
 
@@ -23,7 +25,7 @@ def hello(request, bar='World'):
     title = f'Hello, {bar}'
     body = "I am the very model of a modern major general!"
     items = request.query.get("items", "This is a list of strings".split())
-    resp = Response(application.templates.render("demo.html.tmpl", title=title, body=body, items=items, then=then))
+    resp = Response(template.render("demo.html.tmpl", title=title, body=body, items=items, then=then))
     resp.cookies['now'] = str(now)
     resp.cookies['now']['max-age'] = 300
     return resp
