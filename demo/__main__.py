@@ -1,17 +1,12 @@
-
 import datetime
 import getpass
-import os
-from wsgiref.simple_server import make_server
+import pathlib
 
 from bidu import Application, Response
 
-from . import template
+application = Application(template_dir=pathlib.Path(__file__).parent)
+application["site_name"] = "Demo Site"
 
-HOST = os.environ.get('SERVER_HOST', '')
-PORT = int(os.environ.get('SERVER_PORT', 8000))
-
-application = Application()
 
 @application.router(method='GET', route='/')
 def root(request):
@@ -25,13 +20,18 @@ def hello(request, bar='World'):
     title = f'Hello, {bar}'
     body = "I am the very model of a modern major general!"
     items = request.query.get("items", "This is a list of strings".split())
-    resp = Response(template.render("demo.html.tmpl", title=title, body=body, items=items, then=then))
+    resp = Response(application.template("template.tmpl", title=title, item=body, items=items, then=then))
     resp.cookies['now'] = str(now)
     resp.cookies['now']['max-age'] = 300
     return resp
 
 if __name__ == "__main__":
-    with make_server(HOST, PORT, application) as httpd:
+    import os
+    import wsgiref.simple_server
+
+    HOST = os.environ.get('SERVER_HOST', '')
+    PORT = int(os.environ.get('SERVER_PORT', 8000))
+    with wsgiref.simple_server.make_server(HOST, PORT, application) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

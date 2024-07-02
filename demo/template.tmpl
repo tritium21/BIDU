@@ -3,11 +3,11 @@
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
     <meta charset="utf-8" />
-    <title>{{ title }}</title>
+    <title>{{ title }}{% if "site_name" in ctx %} :: {{ ctx["site_name"] }}{% endif %}</title>
 </head>
 <body>
     <h1>{{ title }}</h1>
-    {{ body }}
+    {{ item }}
     <p>You were last here {{ then }}</p>
     <ul>{% for item in items %}
         <li>{{ item }}</li>{% else %}<li>No Items</li>

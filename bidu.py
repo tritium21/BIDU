@@ -78,10 +78,11 @@ class NameVisitor(ast.NodeVisitor):
 
 def parse(stream):
     ELSE = object()
-    EXCLUDE = dir(builtins)
+    # EXCLUDE = set([])
+    DEFAULT_EXCLUDE = set([*dir(builtins), "ctx"])
+    INCLUDE = set([])
 
-    def _expression(expression):
-        body = ast.parse(expression).body
+    def _str(body):
         return [
             ast.Expr(ast.Yield(value=ast.Call(
                 func=ast.Name('str', ctx=ast.Load()),
@@ -90,12 +91,20 @@ def parse(stream):
             )))
             for x in body
         ]
+
+    def _expression(expression):
+        body = ast.parse(expression).body
+        includes = itertools.chain.from_iterable(
+            NameVisitor.get_names(x, exclude=DEFAULT_EXCLUDE) for x in body
+        )
+        INCLUDE.update(includes)
+        return body
     
     def _target(target):
         if len(target) == 1:
-            EXCLUDE.append(target[0])
+            # EXCLUDE.add(target[0])
             return ast.Name(id=target[0], ctx=ast.Store())
-        EXCLUDE.extend(target)
+        # EXCLUDE.update(target)
         return ast.Tuple(
             elts=[ast.Name(id=t, ctx=ast.Store()) for t in target],
             ctx=ast.Store()
@@ -120,11 +129,11 @@ def parse(stream):
                 case ('text', text):
                     yield ast.Expr(ast.Yield(ast.Constant(text)))
                 case ('expression', expression):
-                    yield from _expression(expression)
+                    yield from _str(_expression(expression))
                 case ('else',):
                     yield ELSE
                 case ('for', targets, expression):
-                    iter_ = [n.value for n in ast.parse(expression).body][0]
+                    iter_ = [n.value for n in _expression(expression)][0]
                     target = _target(targets)
                     body, orelse = _split_else(_parse(stream, 'for_end'))
                     yield ast.If(
@@ -134,16 +143,17 @@ def parse(stream):
                     )
                 case ('set', targets, expression):
                     targets = [_target(t) for t in targets]
-                    value = [n.value for n in ast.parse(expression).body][0]
+                    value = [n.value for n in _expression(expression)][0]
                     yield ast.Assign(targets=targets, value=value)
                 case ('if', expression):
-                    test = [n.value for n in ast.parse(expression).body][0]
+                    test = [n.value for n in _expression(expression)][0]
                     body, orelse = _split_else(_parse(stream, 'if_end'))
                     yield ast.If(
                         test=test,
                         body=body,
                         orelse=orelse
                     )
+
 
 
     inner_func = ast.FunctionDef(
@@ -161,8 +171,8 @@ def parse(stream):
         decorator_list=[],
         returns=None,
     )
-    names = NameVisitor.get_names(inner_func, EXCLUDE)
-
+    # names = NameVisitor.get_names(inner_func, (DEFAULT_EXCLUDE|EXCLUDE)-INCLUDE)
+    inner_func.body[:] = [ast.Nonlocal(names=list(INCLUDE)), *inner_func.body]
     return ast.fix_missing_locations(ast.Module(
         body=[
             ast.FunctionDef(
@@ -172,9 +182,11 @@ def parse(stream):
                     args=[ast.arg(arg="ctx")],
                     vararg=None,
                     kwonlyargs=[
-                        ast.arg(arg=x) for x in names
+                        # ast.arg(arg=x) for x in names
+                        ast.arg(arg=x) for x in INCLUDE
                     ],
-                    kw_defaults=[ast.Constant(value=None) for x in names],
+                    # kw_defaults=[ast.Constant(value=None) for x in names],
+                    kw_defaults=[ast.Constant(value=None) for x in INCLUDE],
                     kwarg=None,
                     defaults=[ast.Constant(value=None)],
                 ),
@@ -207,10 +219,12 @@ def parse(stream):
     ))
 
 class TemplateLoader:
-    def __init__(self):
+    def __init__(self, root=None):
         self.cache = {}
+        self.root = pathlib.Path(root) if root is not None else pathlib.Path.cwd()
 
-    def _exec(self, path, namespace):
+    @classmethod
+    def exec_template(cls, path, namespace):
         path = pathlib.Path(path)
         text = path.read_text(encoding='UTF-8')
         tree = parse(tokenize(text))
@@ -218,59 +232,25 @@ class TemplateLoader:
 
     def load_mod(self, path):
         path = pathlib.Path(path)
+        if not path.is_absolute():
+            path = self.root / path
         if path.name not in self.cache:
             mod = types.ModuleType(path.stem)
-            self._exec(path, mod.__dict__)
+            self.exec_template(path, mod.__dict__)
             self.cache[path.name] = mod
         return self.cache[path.name]
     
     def load(self, path):
         return self.load_mod(path).render
 
-    def render(self, path, **kwargs):
+    def bind(self, context):
+        def bound(path, *pargs, **kwargs):
+            return self.render(path, context, *pargs, **kwargs)
+        return bound
+
+    def render(self, path, *pargs, **kwargs):
         tmpl = self.load(path)
-        return tmpl(**kwargs)
-
-
-class HTMLFinder(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path, target=None):
-        if path is None or path == "":
-            path = [pathlib.Path.cwd()]
-        if "." in fullname:
-            *parents, name = fullname.split(".")
-        else:
-            name = fullname
-        for entry in path:
-            p = pathlib.Path(entry, name)
-            
-            if p.is_dir():
-                filename = p / "__init__.tmpl"
-                submodule_locations = [p]
-            else:
-                filename = p.with_suffix(".tmpl")
-                submodule_locations = None
-            if not filename.exists():
-                continue
-
-            return importlib.util.spec_from_file_location(
-                fullname, filename, loader=HTMLLoader(filename),
-                submodule_search_locations=submodule_locations,
-            )
-
-
-class HTMLLoader(importlib.abc.Loader):
-    def __init__(self, filename):
-        self.filename = filename
-        self._templates = TemplateLoader()
-
-    def create_module(self, spec):
-        return None
-
-    def exec_module(self, module):
-        self._templates._exec(self.filename, module.__dict__)
-
-
-sys.meta_path.append(HTMLFinder())
+        return tmpl(*pargs, **kwargs)
 
 
 class Request(collections.abc.Mapping):
@@ -457,7 +437,7 @@ class Response(collections.abc.MutableMapping):
         cookies = [("Set-Cookie", morsel.OutputString()) for morsel in self.cookies.values()]
         if 'Content-Type' not in self._headers:
             self._headers['Content-Type'] = f'{self.content_type}; charset=utf-8'
-        headers = [*self._headers.items(), *cookies]
+        headers = [*self.items(), *cookies]
         return headers
 
     @property
@@ -471,11 +451,27 @@ class Response(collections.abc.MutableMapping):
 
 HTTP_404 = Response("Not Found", status=404)
 
-class Application:
-    def __init__(self):
+class Application(collections.abc.MutableMapping):
+    def __init__(self, template_dir=None):
         self.routes = []
+        self.context = {}
         self.endpoints = collections.defaultdict(list)
-        self.templates = TemplateLoader()
+        self.template = TemplateLoader(root=template_dir).bind(self)
+
+    def __getitem__(self, name):
+        return self.context[name]
+
+    def __setitem__(self, name, value):
+        self.context[name] = value
+
+    def __delitem__(self, name):
+        del self.context[name]
+
+    def __iter__(self):
+        return iter(self.context)
+    
+    def __len__(self):
+        return len(self.context)
 
     def url_for(self, endpoint_name, **kwargs):
         for rule in self.endpoints[endpoint_name]:
@@ -515,3 +511,44 @@ class Application:
         start_response(response.status, response.headers)
         self._active_request = None
         return response.body
+
+
+class TemplateImportFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if path is None or path == "":
+            path = [pathlib.Path.cwd()]
+        if "." in fullname:
+            *parents, name = fullname.split(".")
+        else:
+            name = fullname
+        for entry in path:
+            p = pathlib.Path(entry, name)
+            
+            if p.is_dir():
+                filename = p / "__init__.tmpl"
+                submodule_locations = [p]
+            else:
+                filename = p.with_suffix(".tmpl")
+                submodule_locations = None
+            if not filename.exists():
+                continue
+
+            return importlib.util.spec_from_file_location(
+                fullname, filename, loader=TemplateImportLoader(filename),
+                submodule_search_locations=submodule_locations,
+            )
+
+
+class TemplateImportLoader(importlib.abc.Loader):
+    def __init__(self, filename):
+        self.filename = filename
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        TemplateLoader.exec_template(self.filename, module.__dict__)
+
+
+def install_template_hook():
+    sys.meta_path.append(TemplateImportFinder())
