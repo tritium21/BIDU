@@ -4,7 +4,9 @@ import collections
 import collections.abc
 import functools
 import http.cookies
-import importlib.machinery
+import importlib
+import importlib.abc
+import importlib.util
 import inspect
 import itertools
 import pathlib
@@ -229,10 +231,6 @@ class TemplateLoader:
         tmpl = self.load(path)
         return tmpl(**kwargs)
 
-import importlib
-import importlib.abc
-import importlib.util
-import sys
 
 class HTMLFinder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path, target=None):
@@ -259,6 +257,7 @@ class HTMLFinder(importlib.abc.MetaPathFinder):
                 submodule_search_locations=submodule_locations,
             )
 
+
 class HTMLLoader(importlib.abc.Loader):
     def __init__(self, filename):
         self.filename = filename
@@ -269,6 +268,7 @@ class HTMLLoader(importlib.abc.Loader):
 
     def exec_module(self, module):
         self._templates._exec(self.filename, module.__dict__)
+
 
 sys.meta_path.append(HTMLFinder())
 
