@@ -18,11 +18,7 @@ import urllib.parse
 
 def tokenize(instring):
     toks = iter(re.split(r'({{|{%|%}|}})', instring))
-    while True:
-        try:
-            tok = next(toks)
-        except StopIteration:
-            break
+    while (tok := next(toks, None)) is not None:
         match tok:
             case "{{":
                 yield ('expression', next(toks).strip())
@@ -77,6 +73,7 @@ class NameVisitor(ast.NodeVisitor):
         return [n for n in inst._NAMES if n not in exclude]
 
 def parse(stream):
+    # Keeping old EXCLUDE code in place, commented out, in case edge case
     ELSE = object()
     # EXCLUDE = set([])
     DEFAULT_EXCLUDE = set([*dir(builtins), "ctx"])
@@ -118,11 +115,7 @@ def parse(stream):
 
     def _parse(stream, end=None):
         stream = iter(stream)
-        while True:
-            try:
-                token = next(stream)
-            except StopIteration:
-                break
+        while (token := next(stream, None)) is not None:
             if token[0] == end:
                 return
             match token:
