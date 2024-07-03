@@ -9,6 +9,7 @@
     <h1>{{ title }}</h1>
     {{ item }}
     <p>You were last here {{ then }}</p>
+    <p>You have been here {{ count }} times.</p>
     <ul>{% for item in items %}
         <li>{{ item }}</li>{% else %}<li>No Items</li>
     {% endfor %}

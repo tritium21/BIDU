@@ -1,13 +1,16 @@
 import ast
+import atexit
 import builtins
 import collections
 import collections.abc
+import dataclasses
 import functools
 import http.cookies
 import inspect
 import itertools
 import pathlib
 import re
+import shelve
 import types
 import urllib.parse
 
@@ -498,3 +501,181 @@ class Application(collections.abc.MutableMapping):
         start_response(response.status, response.headers)
         self._active_request = None
         return response.body
+
+class BaseBackend(collections.abc.MutableMapping):
+    def __init__(self, data=None):
+        self._data = data
+        atexit.register(self.sync)
+
+    def _key(self, key):
+        return key
+
+    def __repr__(self):
+        data = self._data
+        return f"{type(self).__name__}({data=})"
+
+    def __getitem__(self, name):
+        return self._data[self._key(name)]
+
+    def __setitem__(self, name, value):
+        self._data[self._key(name)] = value
+
+    def __delitem__(self, name):
+        del self._data[self._key(name)]
+    
+    def __len__(self):
+        return len(self._data)
+    
+    def __iter__(self):
+        return iter(self._data)
+
+    def close(self):
+        raise NotImplementedError()
+    
+    def sync(self):
+        raise NotImplementedError()
+
+
+class MemoryBackend(BaseBackend):
+    def __init__(self, *p, **kw):
+        super().__init__(dict(*p, **kw))
+
+    def sync(self):
+        return
+    
+    def close(self):
+        return
+
+
+class ShelveBackend(BaseBackend):
+    def __init__(self, filename, flag='c', protocol=None, writeback=False):
+        self._filename = filename
+        self._flag = flag
+        self._protocol = protocol
+        self._writeback = writeback
+        super().__init__(shelve.open(filename, flag, protocol, writeback))
+
+    def _key(self, other):
+        return f"{other}"
+
+    def __repr__(self):
+        filename = self._filename
+        flag = self._flag
+        protocol = self._protocol
+        writeback = self._writeback
+        return f"{type(self).__name__}({filename=}, {flag=}, {protocol=}, {writeback=})"
+
+    def sync(self):
+        return self._data.sync()
+    
+    def close(self):
+        return self._data.close()
+
+
+class Storage(collections.abc.MutableMapping):
+    ROOT = pathlib.PurePosixPath('/')
+
+    def __init__(self, backend, root=ROOT):
+        self.root = root
+        self.backend = backend
+
+    def __fspath__(self):
+        return str(self.root)
+    
+    def __truediv__(self, other):
+        return self[other]
+
+    @property
+    def value(self):
+        model =  self.backend.get(self._model_key(self.root.parent))
+        value = self.backend.get(self.root)
+        if model is None:
+            return value
+        return model(**value)
+        
+    
+    @value.setter
+    def value(self, other):
+        model =  self.backend.get(self._model_key(self.root.parent))
+        if model is None:
+            self.backend[self.root] = other
+        elif isinstance(other, model):
+            self.backend[self.root] = dataclasses.asdict(other)
+        else:
+            raise ValueError
+
+    @property
+    def model(self):
+        return self.backend.get(self._model_key(self.root))
+    
+    @model.setter
+    def model(self, other):
+        if dataclasses.is_dataclass(other) and isinstance(other, type):
+            self.backend[self._model_key(self.root)] = other
+        else:
+            raise ValueError
+
+    def _check_key(self, name):
+        if not isinstance(name, (str, pathlib.PurePosixPath)):
+            raise ValueError
+        name = pathlib.PurePosixPath(name)
+        if name.is_absolute() and name.is_relative_to(self.root):
+            return name
+        if name.is_absolute():
+            raise KeyError
+        return (self.root / name)
+
+    def _model_key(self, name):
+        name = pathlib.PurePosixPath(name)
+        return f"!model:{name}"
+
+    def __getitem__(self, name):
+        name = self._check_key(name)
+        return type(self)(self.backend, name)
+
+    def __setitem__(self, name, value):
+        name = self._check_key(name)
+        self[name.relative_to(self.root)].value = value
+
+    def __delitem__(self, name):
+        name = self._check_key(name)
+        del self.backend[name]
+    
+    def __len__(self):
+        return len(list(self.child_keys()))
+    
+    def __iter__(self):
+        return self.child_keys()
+    
+    def child_keys(self, path=None, direct=False):
+        path = path if path is not None else self.root
+        path = pathlib.PurePosixPath(path)
+        length = len(path.parts)
+        for key in self.backend.keys():
+            key = pathlib.PurePosixPath(key)
+            if not key.is_relative_to(path):
+                continue
+            if direct and len(key.parts) > (length+1):
+                continue
+            yield key
+    
+    def child_values(self, path=None, direct=False):
+        for key in self.child_keys(path, direct):
+            yield self[key.relative_to(self.root)]
+    
+    def child_items(self, path=None, direct=False):
+        for key in self.child_keys(path, direct):
+            key = key.relative_to(self.root)
+            yield key, self[key]
+
+    def query(self, predicate=None):
+        if predicate is None:
+            return list(self.child_items(direct=True))
+        if not callable(predicate):
+            raise ValueError
+        res = []
+        for key, value in self.child_items(direct=True):
+            value = value.value
+            if predicate(value):
+                res.append((key, value))
+        return res

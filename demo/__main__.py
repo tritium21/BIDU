@@ -2,11 +2,13 @@ import datetime
 import getpass
 import pathlib
 
-from bidu import Application, Response
+from bidu import Application, Response, Storage, MemoryBackend
 
 application = Application(template_dir=pathlib.Path(__file__).parent)
 application["site_name"] = "Demo Site"
 
+storage = Storage(MemoryBackend())
+storage['count'] = 0
 
 @application.router(method='GET', route='/')
 def root(request):
@@ -20,7 +22,10 @@ def hello(request, bar='World'):
     title = f'Hello, {bar}'
     body = "I am the very model of a modern major general!"
     items = request.query.get("items", "This is a list of strings".split())
-    resp = Response(request.application.template("template.tmpl", title=title, item=body, items=items, then=then))
+    count = (storage / "count").value
+    count += 1
+    (storage / "count").value = count
+    resp = Response(request.application.template("template.tmpl", title=title, item=body, items=items, then=then, count=count))
     resp.cookies['now'] = str(now)
     resp.cookies['now']['max-age'] = 300
     return resp
