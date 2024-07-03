@@ -313,7 +313,7 @@ class Rule:
 
     def __call__(self, request):
         func = self.match_path(request.path_info)
-        return func(request)
+        return func(request) if func is not None else None
 
     def __eq__(self, other):
         if isinstance(other, Rule):
@@ -480,11 +480,11 @@ class Application(collections.abc.MutableMapping):
         self.endpoints[rule.endpoint_name].append(rule)
         return func
 
-    get = functools.partialmethod(router, method='GET')
-    post = functools.partialmethod(router, method='POST')
-    put = functools.partialmethod(router, method='PUT')
-    patch = functools.partialmethod(router, method='PATCH')
-    delete = functools.partialmethod(router, method='DELETE')
+    GET = functools.partialmethod(router, method='GET')
+    POST = functools.partialmethod(router, method='POST')
+    PUT = functools.partialmethod(router, method='PUT')
+    PATCH = functools.partialmethod(router, method='PATCH')
+    DELETE = functools.partialmethod(router, method='DELETE')
 
     def dispatch(self, request):
         for route in self.routes:
@@ -503,8 +503,7 @@ class Application(collections.abc.MutableMapping):
         return response.body
 
 class BaseBackend(collections.abc.MutableMapping):
-    def __init__(self, data=None):
-        self._data = data
+    def __init__(self):
         atexit.register(self.sync)
 
     def _key(self, key):
@@ -538,7 +537,8 @@ class BaseBackend(collections.abc.MutableMapping):
 
 class MemoryBackend(BaseBackend):
     def __init__(self, *p, **kw):
-        super().__init__(dict(*p, **kw))
+        super().__init__()
+        self._data = dict(*p, **kw)
 
     def sync(self):
         return
@@ -549,11 +549,12 @@ class MemoryBackend(BaseBackend):
 
 class ShelveBackend(BaseBackend):
     def __init__(self, filename, flag='c', protocol=None, writeback=False):
+        super().__init__()
         self._filename = filename
         self._flag = flag
         self._protocol = protocol
         self._writeback = writeback
-        super().__init__(shelve.open(filename, flag, protocol, writeback))
+        self._data = shelve.open(filename, flag, protocol, writeback)
 
     def _key(self, other):
         return f"{other}"

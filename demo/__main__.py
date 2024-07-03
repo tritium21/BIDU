@@ -14,8 +14,8 @@ storage['count'] = 0
 def root(request):
     return Response('', status=302, headers={'location': request.url_for('hello', bar=getpass.getuser())})
 
-@application.get(route='/hello/<bar>/')
-@application.get(route='/hello/')
+@application.GET(route='/hello/<bar>/')
+@application.GET(route='/hello/')
 def hello(request, bar='World'):
     now = datetime.datetime.now().isoformat()
     then = t.value if (t := request.cookies.get("now")) else "never"
@@ -31,13 +31,16 @@ def hello(request, bar='World'):
     return resp
 
 if __name__ == "__main__":
+    import sys
     import os
     import wsgiref.simple_server
 
-    HOST = os.environ.get('SERVER_HOST', '')
-    PORT = int(os.environ.get('SERVER_PORT', 8000))
-    with wsgiref.simple_server.make_server(HOST, PORT, application) as httpd:
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            pass
+    def main(argv=None):
+        HOST = os.environ.get('SERVER_HOST', '')
+        PORT = int(os.environ.get('SERVER_PORT', 8000))
+        with wsgiref.simple_server.make_server(HOST, PORT, application) as httpd:
+            try:
+                httpd.serve_forever()
+            except KeyboardInterrupt:
+                return
+    sys.exit(main(sys.argv[1:]))
