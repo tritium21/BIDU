@@ -142,9 +142,6 @@ def parse(stream):
                         body=body,
                         orelse=orelse
                     )
-
-
-
     inner_func = ast.FunctionDef(
         name="_inner",
         args=ast.arguments(
@@ -243,8 +240,9 @@ class TemplateLoader:
 
 
 class Request(collections.abc.Mapping):
-    def __init__(self, environ, *posargs, **kwargs):
+    def __init__(self, environ, application, *posargs, **kwargs):
         super().__init__(*posargs, **kwargs)
+        self.application = application
         self.environ = {
             k: v 
             for k, v in environ.items()
@@ -279,6 +277,14 @@ class Request(collections.abc.Mapping):
             return {}
         return http.cookies.SimpleCookie(self.environ["HTTP_COOKIE"])
 
+    def url_for(self, endpoint_name, **kwargs):
+        for rule in self.application.endpoints[endpoint_name]:
+            try:
+                if len(kwargs) != rule.count:
+                    continue
+                return str(pathlib.PurePosixPath(self['SCRIPT_NAME']) / rule.redirect(**kwargs))
+            except KeyError:
+                pass
 
 class RuleSegment:
     def __init__(self, name, pattern, type, type_name):
@@ -325,7 +331,7 @@ class Rule:
                 new_path.append(segment)
                 continue
             new_path.append(kwargs.pop(segment.name))
-        return str(pathlib.PurePosixPath(*new_path))
+        return pathlib.PurePosixPath(*pathlib.PurePosixPath(*new_path).parts[1:])
 
     def match_path(self, other):
         parts = pathlib.PurePosixPath(other).parts
@@ -343,7 +349,6 @@ class Rule:
                 else:
                     return
         return functools.partial(self.handler, **kwargs)
-
 
     def _parse_route(self):
         type_patterns = {
@@ -370,6 +375,7 @@ class Rule:
             pattern = re.compile(f"^(?P<{name}>{type_patterns.get(type)})$")
             segments.append(RuleSegment(name, pattern, types[type], type))
         return segments
+
 
 class Response(collections.abc.MutableMapping):
     STATUS_MAP = {
@@ -440,6 +446,7 @@ class Response(collections.abc.MutableMapping):
 
 HTTP_404 = Response("Not Found", status=404)
 
+
 class Application(collections.abc.MutableMapping):
     def __init__(self, template_dir=None):
         self.routes = []
@@ -461,15 +468,6 @@ class Application(collections.abc.MutableMapping):
     
     def __len__(self):
         return len(self.context)
-
-    def url_for(self, endpoint_name, **kwargs):
-        for rule in self.endpoints[endpoint_name]:
-            try:
-                if len(kwargs) != rule.count:
-                    continue
-                return rule.redirect(**kwargs)
-            except KeyError:
-                pass
 
     def router(self, func=None, /, *, method=None, route=None, endpoint_name=None):
         if func is None:
@@ -493,11 +491,10 @@ class Application(collections.abc.MutableMapping):
         return HTTP_404
 
     def __call__(self, environ, start_response):
-        request = Request(environ)
+        request = Request(environ, self)
         response = self.dispatch(request)
         if isinstance(response, (str, bytes)):
             response = Response(response)
         start_response(response.status, response.headers)
         self._active_request = None
         return response.body
-
