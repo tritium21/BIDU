@@ -675,7 +675,6 @@ class Storage(collections.abc.MutableMapping):
             raise ValueError
         res = []
         for key, value in self.child_items(direct=True):
-            value = value.value
             if predicate(value):
                 res.append((key, value))
         return res
