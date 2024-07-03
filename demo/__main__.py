@@ -22,9 +22,9 @@ def hello(request, bar='World'):
     title = f'Hello, {bar}'
     body = "I am the very model of a modern major general!"
     items = request.query.get("items", "This is a list of strings".split())
-    count = (storage / "count").value
+    count = storage["count"]
     count += 1
-    (storage / "count").value = count
+    storage["count"] = count
     resp = Response(request.application.template("template.tmpl", title=title, item=body, items=items, then=then, count=count))
     resp.cookies['now'] = str(now)
     resp.cookies['now']['max-age'] = 300

@@ -583,7 +583,8 @@ class Storage(collections.abc.MutableMapping):
         return str(self.root)
     
     def __truediv__(self, other):
-        return self[other]
+        other = self._check_key(other)
+        return type(self)(self.backend, other)
 
     @property
     def value(self):
@@ -630,12 +631,11 @@ class Storage(collections.abc.MutableMapping):
         return f"!model:{name}"
 
     def __getitem__(self, name):
-        name = self._check_key(name)
-        return type(self)(self.backend, name)
+        return (self / name).value
 
     def __setitem__(self, name, value):
         name = self._check_key(name)
-        self[name.relative_to(self.root)].value = value
+        (self / name).value = value
 
     def __delitem__(self, name):
         name = self._check_key(name)
